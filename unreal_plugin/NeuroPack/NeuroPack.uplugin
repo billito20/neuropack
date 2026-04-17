@@ -1,0 +1,25 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "NeuroPack",
+  "Description": "Cross-asset structure-aware compression and streaming for game assets. Ed25519-signed packages, CDC chunk deduplication, already-compressed bypass, incremental rebuilds.",
+  "Category": "Asset Management",
+  "CreatedBy": "NeuroPack Team",
+  "CreatedByURL": "https://example.com/neuropack",
+  "DocsURL": "https://example.com/neuropack/docs",
+  "MarketplaceURL": "",
+  "SupportURL": "",
+  "CanContainContent": false,
+  "IsBetaVersion": false,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "NeuroPack",
+      "Type": "Runtime",
+      "LoadingPhase": "Default",
+      "PlatformAllowList": [ "Win64", "Linux", "Mac" ]
+    }
+  ]
+}

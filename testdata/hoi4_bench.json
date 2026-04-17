@@ -1,0 +1,36 @@
+{
+  "file_count": 1054,
+  "total_bytes": 118678994,
+  "zstd": {
+    "compressed_bytes": 60689370,
+    "compress_ms": 1574,
+    "decompress_ms": 606,
+    "ratio": 1.9555153398362843
+  },
+  "brotli": {
+    "compressed_bytes": 56416721,
+    "compress_ms": 12106,
+    "decompress_ms": 1866,
+    "ratio": 2.1036138204487282
+  },
+  "neuropack": {
+    "compressed_bytes": 58966075,
+    "compress_ms": 61390,
+    "decompress_ms": 2586,
+    "ratio": 2.012665655633345
+  },
+  "neuropack_snapshot": {
+    "baseline": {
+      "compressed_bytes": 58965519,
+      "compress_ms": 61365,
+      "decompress_ms": 2851,
+      "ratio": 2.012684633539815
+    },
+    "optimized": {
+      "compressed_bytes": 58966075,
+      "compress_ms": 61390,
+      "decompress_ms": 2586,
+      "ratio": 2.012665655633345
+    }
+  }
+}

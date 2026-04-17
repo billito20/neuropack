@@ -1,0 +1,4 @@
+/target/
+/.claude/
+neuropack-bench-*.neuropack
+benchmark-stress-*.json

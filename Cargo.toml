@@ -1,0 +1,40 @@
+[package]
+name = "neuropack"
+version = "1.0.0"
+edition = "2021"
+authors = ["NeuroPack Team"]
+description = "NeuroPack: cross-asset structure-aware compression for game and media assets."
+license = "Apache-2.0"
+repository = "https://example.com/neuropack"
+
+# rlib for Rust consumers; cdylib for C/C++ game engines via FFI.
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "neuropack"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+bincode = "1.3"
+clap = { version = "4.4", features = ["derive"] }
+brotli = "3.3"
+rayon = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+walkdir = "2.3"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+aho-corasick = "1.1"
+zstd = "0.11"
+fastcdc = "3.0"
+toml = "0.8"
+eframe = "0.28"
+rfd = "0.14"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

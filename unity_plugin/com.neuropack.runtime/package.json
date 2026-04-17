@@ -1,0 +1,19 @@
+{
+  "name": "com.neuropack.runtime",
+  "version": "1.0.0",
+  "displayName": "NeuroPack Runtime",
+  "description": "Cross-asset structure-aware compression and streaming for Unity. Ed25519-signed packages, CDC chunk deduplication, already-compressed bypass, incremental rebuilds.",
+  "unity": "2022.3",
+  "unityRelease": "0f1",
+  "documentationUrl": "https://example.com/neuropack/docs",
+  "changelogUrl": "https://example.com/neuropack/changelog",
+  "licensesUrl": "https://example.com/neuropack/license",
+  "keywords": [ "compression", "assets", "streaming", "neuropack" ],
+  "category": "Asset Management",
+  "author": {
+    "name": "NeuroPack Team",
+    "email": "team@neuropack.example.com",
+    "url": "https://example.com/neuropack"
+  },
+  "dependencies": {}
+}
