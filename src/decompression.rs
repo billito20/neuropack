@@ -293,6 +293,7 @@ impl PackageReader {
     /// For large files the stream is a live `zstd::Decoder` over a cloned file
     /// handle.  For chunk-based small files the chunks are decompressed eagerly
     /// into a `Cursor<Vec<u8>>` (combined size ≤ MAX_UNCOMPRESSED guard).
+    #[allow(dead_code)]
     pub fn open_asset_stream(
         &self,
         relative_path: &Path,
@@ -365,26 +366,6 @@ impl PackageReader {
             }
         }
         Ok(report)
-    }
-
-    fn verify_large(&self, entry: &AssetIndexEntry) -> anyhow::Result<()> {
-        let abs_offset = self.header.body_offset + entry.compressed_offset;
-        let mut src = self.file.try_clone()?;
-        src.seek(SeekFrom::Start(abs_offset))?;
-        let bounded = src.take(entry.compressed_length);
-        let mut decoder = Decoder::new(bounded)?;
-        let mut hasher = Xxh3Hasher::default();
-        let mut buf = vec![0u8; 4 * 1024 * 1024];
-        loop {
-            let n = decoder.read(&mut buf)?;
-            if n == 0 { break; }
-            hasher.update(&buf[..n]);
-        }
-        let actual = hasher.finish();
-        if actual != entry.content_hash {
-            anyhow::bail!("hash mismatch for {}: {:#x} != {:#x}", entry.relative_path.display(), entry.content_hash, actual);
-        }
-        Ok(())
     }
 
     // ── extract_large_to_file ──────────────────────────────────────────────
@@ -502,6 +483,7 @@ fn verify_entry_standalone(
 }
 
 /// Decompress a small entry from a fresh file handle (rayon-safe).
+#[allow(clippy::too_many_arguments)]
 fn extract_small_entry(
     package_path: &Path,
     header: &PackageHeader,

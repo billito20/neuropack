@@ -184,6 +184,7 @@ pub fn verify_package_signature(path: &Path) -> anyhow::Result<VerifyingKey> {
 }
 
 /// Return `true` if `path` ends with a NPSIG1 magic block (does not verify).
+#[allow(dead_code)]
 pub fn is_signed(path: &Path) -> anyhow::Result<bool> {
     let file_len = std::fs::metadata(path)?.len();
     if (file_len as usize) < BLOCK_LEN {

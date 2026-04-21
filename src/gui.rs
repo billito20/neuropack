@@ -21,17 +21,12 @@ pub fn launch() -> eframe::Result<()> {
 
 // ── Shared per-operation state ─────────────────────────────────────────────
 
+#[derive(Default)]
 struct OpState {
     running: bool,
     result:  Option<Result<String, String>>,
     /// Token for progress/cancel on operations that support it.
     token:   Option<Arc<ProgressToken>>,
-}
-
-impl Default for OpState {
-    fn default() -> Self {
-        Self { running: false, result: None, token: None }
-    }
 }
 
 type SharedOp = Arc<Mutex<OpState>>;
@@ -624,7 +619,7 @@ fn analyze_folder(src: &PathBuf, out: Option<PathBuf>) -> anyhow::Result<String>
     use crate::asset_scanner::{AssetScanner, AssetType};
     use crate::duplicate::{ExactDuplicateCluster, find_similar_files};
 
-    let assets = AssetScanner::default().scan(src)?;
+    let assets = AssetScanner {}.scan(src)?;
     let total_bytes: u64 = assets.iter().map(|a| a.size).sum();
 
     let mb = |t: AssetType| -> f64 {

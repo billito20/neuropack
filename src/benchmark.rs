@@ -46,7 +46,7 @@ impl BenchmarkRunner {
         let root = root.as_ref();
         let output = output.as_ref();
         let output_dir = output.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let scanner = AssetScanner::default();
+        let scanner = AssetScanner {};
         let assets = scanner.scan(root)?;
 
         let total_bytes: u64 = assets.iter().map(|a| a.size).sum();

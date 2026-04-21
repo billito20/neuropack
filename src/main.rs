@@ -166,7 +166,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan { path, json } => {
-            let scanner = AssetScanner::default();
+            let scanner = AssetScanner {};
             let assets = scanner.scan(&path)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&assets)?);
@@ -208,13 +208,13 @@ fn main() -> Result<()> {
         }
 
         Commands::Benchmark { path, report, no_brotli, no_zstd19, no_neuropack } => {
-            let runner = BenchmarkRunner::default();
+            let runner = BenchmarkRunner {};
             runner.run(&path, &report, no_brotli, no_zstd19, no_neuropack)?;
             println!("Benchmark report saved to {}", report.display());
         }
 
         Commands::Patch { old, new, output } => {
-            let patcher = PatchBuilder::default();
+            let patcher = PatchBuilder {};
             patcher.build(&old, &new, &output)?;
             println!("Created patch {}", output.display());
         }
@@ -331,8 +331,8 @@ fn cmd_list_table(entries: &[crate::decompression::ListEntry], reader: &PackageR
     };
 
     println!(
-        "{:<55} {:<9} {:>10} {:>10} {:>7}  {}",
-        "PATH", "TYPE", "UNCOMPR", "COMPR", "RATIO", "DUP"
+        "{:<55} {:<9} {:>10} {:>10} {:>7}  DUP",
+        "PATH", "TYPE", "UNCOMPR", "COMPR", "RATIO"
     );
     println!("{}", "-".repeat(100));
 
@@ -408,7 +408,7 @@ fn cmd_analyze(path: &std::path::Path, json: bool) -> anyhow::Result<()> {
         duplicates: Vec<DuplicateGroup>, similar_groups: Vec<SimilarPair>,
     }
 
-    let scanner = AssetScanner::default();
+    let scanner = AssetScanner {};
     let assets = scanner.scan(path)?;
 
     let mut tex     = TypeStats { files: 0, bytes: 0 };

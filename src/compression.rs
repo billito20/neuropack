@@ -99,13 +99,14 @@ impl Pipeline {
     /// - Stable sort before processing → bit-for-bit identical packages
     ///   for the same input (deterministic builds).
     /// - Atomic rename on success; partial writes never land at destination.
+    #[allow(clippy::type_complexity)]
     pub fn compress_folder_with_progress(
         &self,
         root: &Path,
         output: &Path,
         token: Option<Arc<ProgressToken>>,
     ) -> anyhow::Result<()> {
-        let scanner = AssetScanner::default();
+        let scanner = AssetScanner {};
         let mut assets = scanner.scan(root)?;
 
         // ── Deterministic ordering: sort by relative path before processing.
@@ -177,7 +178,7 @@ impl Pipeline {
             if asset.size < LARGE_FILE_THRESHOLD {
                 continue;
             }
-            if token.as_ref().map_or(false, |t| t.is_cancelled()) {
+            if token.as_ref().is_some_and(|t| t.is_cancelled()) {
                 anyhow::bail!("cancelled");
             }
 
@@ -287,12 +288,12 @@ impl Pipeline {
         // ── Stage 2b: sequential pool commit + body write ─────────────────
 
         for (idx, pre_encoding, already_compressed, chunks) in small_asset_work {
-            if token.as_ref().map_or(false, |t| t.is_cancelled()) {
+            if token.as_ref().is_some_and(|t| t.is_cancelled()) {
                 anyhow::bail!("cancelled");
             }
 
             done_assets += 1;
-            if done_assets % 500 == 0 {
+            if done_assets.is_multiple_of(500) {
                 eprintln!(
                     "[{}/{}] {} dedup hits so far ...",
                     done_assets, total_assets, dedup_hits
@@ -414,10 +415,12 @@ impl Pipeline {
         })?;
         let index_bytes = serialize(&index_entries)?;
 
-        let mut header = PackageHeader::default(); // version = 3
-        header.metadata_length = metadata_bytes.len() as u64;
-        header.dictionary_length = dictionary_bytes.len() as u64;
-        header.index_length = index_bytes.len() as u64;
+        let mut header = PackageHeader {
+            metadata_length: metadata_bytes.len() as u64,
+            dictionary_length: dictionary_bytes.len() as u64,
+            index_length: index_bytes.len() as u64,
+            ..PackageHeader::default()
+        };
         let header_size = bincode::serialized_size(&header)?;
         header.body_offset = header_size + header.metadata_length + header.dictionary_length;
         header.index_offset = header.body_offset + current_offset;
@@ -484,7 +487,7 @@ impl Pipeline {
             None
         };
 
-        let scanner = AssetScanner::default();
+        let scanner = AssetScanner {};
         let mut assets = scanner.scan(root)?;
         assets.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
@@ -543,7 +546,7 @@ impl Pipeline {
             if asset.size < LARGE_FILE_THRESHOLD {
                 continue;
             }
-            if token.as_ref().map_or(false, |t| t.is_cancelled()) {
+            if token.as_ref().is_some_and(|t| t.is_cancelled()) {
                 anyhow::bail!("cancelled");
             }
 
@@ -552,36 +555,25 @@ impl Pipeline {
                 .map(|e| asset_unchanged(asset, e))
                 .unwrap_or(false);
 
-            let (pre_enc, compressed_len) = if unchanged
-                && old_entry.is_some()
-                && old_reader.is_some()
-                && old_file.is_some()
-            {
-                // Copy raw compressed bytes from the old package body.
-                let e = old_entry.expect("checked above");
-                let old_reader_ref = old_reader.as_ref().expect("checked above");
-                let abs_offset =
-                    old_reader_ref.header.body_offset + e.index_entry.compressed_offset;
-                let len = e.index_entry.compressed_length;
-                copy_body_bytes(
-                    old_file.as_mut().expect("checked above"),
-                    abs_offset,
-                    len,
-                    &mut body_writer,
-                )?;
-                reused += 1;
-                (e.index_entry.pre_encoding.clone(), len)
-            } else {
-                // Re-compress.
-                let level = self.zstd_level(&asset.asset_type);
-                let file = File::open(&asset.path)?;
-                let mut reader = BufReader::with_capacity(4 * 1024 * 1024, file);
-                let mut cw = CountingWriter { inner: &mut body_writer, count: 0 };
-                let mut enc = Encoder::new(&mut cw, level)?;
-                std::io::copy(&mut reader, &mut enc)?;
-                enc.finish()?;
-                recompressed += 1;
-                (PreEncoding::None, cw.count)
+            let (pre_enc, compressed_len) = match (unchanged, old_entry, old_reader.as_ref(), old_file.as_mut()) {
+                (true, Some(e), Some(rdr), Some(f)) => {
+                    let abs_offset = rdr.header.body_offset + e.index_entry.compressed_offset;
+                    let len = e.index_entry.compressed_length;
+                    copy_body_bytes(f, abs_offset, len, &mut body_writer)?;
+                    reused += 1;
+                    (e.index_entry.pre_encoding.clone(), len)
+                }
+                _ => {
+                    let level = self.zstd_level(&asset.asset_type);
+                    let file = File::open(&asset.path)?;
+                    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, file);
+                    let mut cw = CountingWriter { inner: &mut body_writer, count: 0 };
+                    let mut enc = Encoder::new(&mut cw, level)?;
+                    std::io::copy(&mut reader, &mut enc)?;
+                    enc.finish()?;
+                    recompressed += 1;
+                    (PreEncoding::None, cw.count)
+                }
             };
 
             let new_compressed_offset = current_offset;
@@ -597,7 +589,7 @@ impl Pipeline {
             if asset.size >= LARGE_FILE_THRESHOLD {
                 continue;
             }
-            if token.as_ref().map_or(false, |t| t.is_cancelled()) {
+            if token.as_ref().is_some_and(|t| t.is_cancelled()) {
                 anyhow::bail!("cancelled");
             }
 
@@ -606,13 +598,8 @@ impl Pipeline {
                 .map(|e| asset_unchanged(asset, e))
                 .unwrap_or(false);
 
-            let (pre_encoding, file_chunks, already_compressed) = if unchanged
-                && old_entry.is_some()
-                && old_reader.is_some()
-                && old_file.is_some()
-            {
-                let e = old_entry.expect("checked above");
-                let old_reader_ref = old_reader.as_ref().expect("checked above");
+            let (pre_encoding, file_chunks, already_compressed) = match (unchanged, old_entry, old_reader.as_ref(), old_file.as_mut()) {
+                (true, Some(e), Some(old_reader_ref), Some(old_f)) => {
                 let mut new_chunks: Vec<AssetChunkRef> = Vec::new();
 
                 for old_chunk in &e.index_entry.chunks {
@@ -634,7 +621,7 @@ impl Pipeline {
                         let abs = old_reader_ref.header.body_offset + old_chunk.body_offset;
                         let new_off = current_offset;
                         copy_body_bytes(
-                            old_file.as_mut().expect("checked above"),
+                            old_f,
                             abs,
                             old_chunk.body_length,
                             &mut body_writer,
@@ -657,7 +644,8 @@ impl Pipeline {
                 }
                 reused += 1;
                 (e.index_entry.pre_encoding.clone(), new_chunks, e.index_entry.is_stored_raw)
-            } else {
+                }
+                _ => {
                 // Re-compress from scratch.
                 let raw = read_file_bytes(&asset.path)?;
                 let already_compressed = is_already_compressed(&asset.asset_type, &asset.path);
@@ -729,6 +717,7 @@ impl Pipeline {
                 }
                 recompressed += 1;
                 (pre_encoding, file_chunks, already_compressed)
+                }
             };
 
             body_info.insert(idx, (pre_encoding, 0, 0, file_chunks, already_compressed));
@@ -810,10 +799,12 @@ impl Pipeline {
         })?;
         let index_bytes = serialize(&index_entries)?;
 
-        let mut header = PackageHeader::default();
-        header.metadata_length = metadata_bytes.len() as u64;
-        header.dictionary_length = dictionary_bytes.len() as u64;
-        header.index_length = index_bytes.len() as u64;
+        let mut header = PackageHeader {
+            metadata_length: metadata_bytes.len() as u64,
+            dictionary_length: dictionary_bytes.len() as u64,
+            index_length: index_bytes.len() as u64,
+            ..PackageHeader::default()
+        };
         let header_size = bincode::serialized_size(&header)?;
         header.body_offset = header_size + header.metadata_length + header.dictionary_length;
         header.index_offset = header.body_offset + current_offset;

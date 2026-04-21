@@ -54,6 +54,7 @@ impl ProgressToken {
     }
 
     /// Convenience: fraction in [0.0, 1.0] for progress bars.
+    #[allow(dead_code)]
     pub fn fraction(&self) -> f32 {
         let (done, total) = self.snapshot();
         if total == 0 { 0.0 } else { (done as f32 / total as f32).min(1.0) }

@@ -98,7 +98,7 @@ impl PatchBuilder {
         let new_root = new_root.as_ref();
         let output = output.as_ref();
 
-        let scanner = AssetScanner::default();
+        let scanner = AssetScanner {};
         let old_assets = scanner.scan(old_root)?;
         let new_assets = scanner.scan(new_root)?;
 

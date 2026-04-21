@@ -46,8 +46,11 @@ pub extern "C" fn neuropack_last_error() -> *const c_char {
 ///
 /// Returns a non-null opaque handle on success, or NULL on failure.
 /// The caller must release it with `neuropack_close`.
+///
+/// # Safety
+/// `path` must be a valid non-null, null-terminated C string for the duration of the call.
 #[no_mangle]
-pub extern "C" fn neuropack_open(path: *const c_char) -> *mut c_void {
+pub unsafe extern "C" fn neuropack_open(path: *const c_char) -> *mut c_void {
     if path.is_null() {
         set_error("path is null");
         return std::ptr::null_mut();
@@ -80,13 +83,18 @@ pub extern "C" fn neuropack_close(handle: *mut c_void) {
 /// - `handle`    Non-null reader handle from `neuropack_open`.
 /// - `rel_path`  Null-terminated relative path, e.g. `"data/textures/hero.dds"`.
 /// - `out_data`  Receives a pointer to the allocated buffer on success.
-///               Free with `neuropack_free_asset`.
+///   Free with `neuropack_free_asset`.
 /// - `out_len`   Receives the byte length of the buffer.
 ///
 /// # Returns
 /// 0 on success, -1 on failure (call `neuropack_last_error` for details).
+///
+/// # Safety
+/// All pointer arguments must be valid and non-null. `handle` must be a live handle from
+/// `neuropack_open`. `rel_path` must be a null-terminated C string. `out_data` and `out_len`
+/// must point to writable memory.
 #[no_mangle]
-pub extern "C" fn neuropack_read_asset(
+pub unsafe extern "C" fn neuropack_read_asset(
     handle: *mut c_void,
     rel_path: *const c_char,
     out_data: *mut *mut u8,
@@ -181,8 +189,12 @@ pub extern "C" fn neuropack_entry_count(handle: *const c_void) -> usize {
 ///
 /// Returns the number of bytes written (including `\0`), or 0 if `i` is
 /// out of range or `buf_len` is too small.
+///
+/// # Safety
+/// `handle` must be a live handle from `neuropack_open`. `buf` must point to at least
+/// `buf_len` writable bytes.
 #[no_mangle]
-pub extern "C" fn neuropack_entry_path(
+pub unsafe extern "C" fn neuropack_entry_path(
     handle: *const c_void,
     i: usize,
     buf: *mut c_char,

@@ -31,7 +31,7 @@ pub struct DictionaryPattern {
     pub benefit: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Dictionary {
     pub patterns: Vec<DictionaryPattern>,
     /// First-byte dispatch table (fallback if AC unavailable).
@@ -41,12 +41,6 @@ pub struct Dictionary {
     /// Not serialized — rebuilt by `prepare()`.
     #[serde(skip)]
     ac: Option<AhoCorasick>,
-}
-
-impl Default for Dictionary {
-    fn default() -> Self {
-        Self { patterns: Vec::new(), dispatch: HashMap::new(), ac: None }
-    }
 }
 
 impl Dictionary {
@@ -152,6 +146,7 @@ impl Dictionary {
 
     /// Replace known patterns with back-references using Aho-Corasick.
     /// Falls back to the first-byte dispatch table if the automaton is unavailable.
+    #[allow(dead_code)]
     pub fn apply_patterns(&self, input: &[u8]) -> Vec<Segment> {
         if let Some(ac) = &self.ac {
             return apply_with_ac(ac, input);
@@ -162,6 +157,7 @@ impl Dictionary {
 
 /// O(n) pattern substitution via Aho-Corasick.
 /// Single linear scan over the input; no per-byte HashMap lookup.
+#[allow(dead_code)]
 fn apply_with_ac(ac: &AhoCorasick, input: &[u8]) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
     let mut last_end = 0usize;
@@ -183,6 +179,7 @@ fn apply_with_ac(ac: &AhoCorasick, input: &[u8]) -> Vec<Segment> {
 }
 
 /// Fallback dispatch-table path (used when AC is not built).
+#[allow(dead_code)]
 fn apply_with_dispatch(
     dispatch: &HashMap<u8, Vec<usize>>,
     patterns: &[DictionaryPattern],
@@ -225,6 +222,7 @@ fn apply_with_dispatch(
 
 /// Scan one file with a strided window, reading at most MAX_SCAN_BYTES.
 /// Returns (hash → count, hash → first-seen bytes).
+#[allow(clippy::type_complexity)]
 fn scan_file_strided(
     path: &Path,
     window_size: usize,
