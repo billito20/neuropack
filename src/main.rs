@@ -80,10 +80,10 @@ enum Commands {
         no_brotli: bool,
         /// Skip zstd-19 (very slow; useful for large datasets where a rough comparison is enough).
         #[arg(long, default_value_t = false)]
-        skip_zstd19: bool,
+        no_zstd19: bool,
         /// Skip NeuroPack passes (use when disk space < compressed corpus size).
         #[arg(long, default_value_t = false)]
-        skip_neuropack: bool,
+        no_neuropack: bool,
     },
     /// Build a CDC binary-diff patch between two folder versions.
     Patch {
@@ -207,9 +207,9 @@ fn main() -> Result<()> {
             );
         }
 
-        Commands::Benchmark { path, report, no_brotli, skip_zstd19, skip_neuropack } => {
+        Commands::Benchmark { path, report, no_brotli, no_zstd19, no_neuropack } => {
             let runner = BenchmarkRunner::default();
-            runner.run(&path, &report, no_brotli, skip_zstd19, skip_neuropack)?;
+            runner.run(&path, &report, no_brotli, no_zstd19, no_neuropack)?;
             println!("Benchmark report saved to {}", report.display());
         }
 

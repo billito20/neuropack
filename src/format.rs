@@ -7,12 +7,18 @@ use std::path::PathBuf;
 /// decompression: no intermediate Vec<u8>, no dictionary segmentation.
 pub const LARGE_FILE_THRESHOLD: u64 = 256 * 1024 * 1024; // 256 MB
 
+/// CDC parameters shared by all subsystems (compression, patch, dedup).
+/// Keeping these identical ensures chunk hashes are comparable across builds.
+pub const CDC_MIN: u32 =  16 * 1024; //  16 KB
+pub const CDC_AVG: u32 =  64 * 1024; //  64 KB
+pub const CDC_MAX: u32 = 256 * 1024; // 256 KB
+
 // ── Header ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageHeader {
     pub magic: [u8; 4],
-    /// 1 = legacy (segment+dictionary), 2 = chunk-dedup (CDC cross-file dedup).
+    /// 1 = legacy (segment+dictionary), 2 = CDC chunk-dedup, 3 = per-type zstd dicts.
     pub version: u16,
     pub metadata_length: u64,
     pub dictionary_length: u64,

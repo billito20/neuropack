@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["NeuroPack Team"]
 description = "NeuroPack: cross-asset structure-aware compression for game and media assets."
 license = "Apache-2.0"
-repository = "https://example.com/neuropack"
+repository = "https://github.com/billito20/neuropack"
 
 # rlib for Rust consumers; cdylib for C/C++ game engines via FFI.
 [lib]

@@ -25,7 +25,7 @@
 //!   embed in the game binary for verification).
 
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
@@ -61,18 +61,20 @@ pub fn save_verifying_key(path: &Path, key: &VerifyingKey) -> anyhow::Result<()>
 /// Load a signing key from a 32-byte seed file.
 pub fn load_signing_key(path: &Path) -> anyhow::Result<SigningKey> {
     let bytes = std::fs::read(path)?;
+    let len = bytes.len();
     let seed: [u8; 32] = bytes
         .try_into()
-        .map_err(|_| anyhow::anyhow!("signing key must be exactly 32 bytes"))?;
+        .map_err(|_| anyhow::anyhow!("signing key must be exactly 32 bytes, got {}", len))?;
     Ok(SigningKey::from_bytes(&seed))
 }
 
 /// Load a verifying key from a 32-byte public-key file.
 pub fn load_verifying_key(path: &Path) -> anyhow::Result<VerifyingKey> {
     let bytes = std::fs::read(path)?;
+    let len = bytes.len();
     let arr: [u8; 32] = bytes
         .try_into()
-        .map_err(|_| anyhow::anyhow!("verifying key must be exactly 32 bytes"))?;
+        .map_err(|_| anyhow::anyhow!("verifying key must be exactly 32 bytes, got {}", len))?;
     VerifyingKey::from_bytes(&arr).map_err(|e| anyhow::anyhow!("invalid verifying key: {e}"))
 }
 
@@ -81,34 +83,63 @@ pub fn load_verifying_key(path: &Path) -> anyhow::Result<VerifyingKey> {
 /// Append a 104-byte NPSIG block to `path`, signing with `signing_key`.
 ///
 /// If the file already has a signature block it is replaced.
-/// The file is modified in-place; on error the file may have been truncated
-/// but will never contain a partial/invalid signature block.
+/// Uses an atomic write: package content + new signature block are written
+/// to a sibling temp file, then renamed over the original — so the original
+/// is never truncated or partially written.
 pub fn sign_package(path: &Path, signing_key: &SigningKey) -> anyhow::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)?;
+    let file_len = path.metadata()?.len();
 
-    let file_len = file.metadata()?.len();
+    // Determine how many bytes are the actual package (strip existing sig).
+    let content_len = {
+        let mut f = std::fs::File::open(path)?;
+        unsigned_content_len(&mut f, file_len)?
+    };
 
-    // Strip any existing signature so we hash exactly the package bytes.
-    let content_len = unsigned_content_len(&mut file, file_len)?;
-    if content_len < file_len {
-        file.set_len(content_len)?;
-    }
-
-    // Stream-hash the package bytes.
-    let digest = sha256_prefix(&mut file, content_len)?;
+    // Stream-hash the package content bytes.
+    let digest = {
+        let mut f = std::fs::File::open(path)?;
+        sha256_prefix(&mut f, content_len)?
+    };
     let sig: Signature = signing_key.sign(&digest);
     let vk = signing_key.verifying_key();
 
-    // Append block.
-    file.seek(SeekFrom::End(0))?;
-    file.write_all(SIG_MAGIC)?;
-    file.write_all(&vk.to_bytes())?;
-    file.write_all(&sig.to_bytes())?;
-    file.flush()?;
+    // Write content + sig block to a temp file, then atomically rename.
+    let tmp_path = sig_tmp_path(path)?;
+    let _guard = SigTempFile(tmp_path.clone());
+    {
+        let mut src = std::fs::File::open(path)?;
+        let mut dst = std::fs::File::create(&tmp_path)?;
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut remaining = content_len;
+        while remaining > 0 {
+            let to_read = (remaining as usize).min(buf.len());
+            let n = src.read(&mut buf[..to_read])?;
+            if n == 0 {
+                anyhow::bail!("unexpected EOF copying package content for signing");
+            }
+            dst.write_all(&buf[..n])?;
+            remaining -= n as u64;
+        }
+        dst.write_all(SIG_MAGIC)?;
+        dst.write_all(&vk.to_bytes())?;
+        dst.write_all(&sig.to_bytes())?;
+        dst.flush()?;
+    }
+    std::fs::rename(&tmp_path, path)?;
     Ok(())
+}
+
+struct SigTempFile(PathBuf);
+impl Drop for SigTempFile {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+}
+
+fn sig_tmp_path(base: &Path) -> anyhow::Result<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?.as_micros();
+    let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("pkg");
+    let dir  = base.parent().unwrap_or(Path::new("."));
+    Ok(dir.join(format!("{}-npsig-{}.tmp", stem, ts)))
 }
 
 /// Verify the signature on `path`.

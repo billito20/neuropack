@@ -3,8 +3,8 @@ use crate::decompression::PackageReader;
 use crate::dictionary::Dictionary;
 use crate::duplicate::ExactDuplicateCluster;
 use crate::format::{
-    AssetChunkRef, AssetIndexEntry, PackageDictionary, PackageDictionaryV3, PackageHeader,
-    PackageManifest, PreEncoding, LARGE_FILE_THRESHOLD,
+    AssetChunkRef, AssetIndexEntry, PackageDictionaryV3, PackageHeader,
+    PackageManifest, PreEncoding, CDC_AVG, CDC_MAX, CDC_MIN, LARGE_FILE_THRESHOLD,
 };
 use crate::game_optimizations::MeshCompressor;
 use crate::incremental::{
@@ -23,15 +23,6 @@ use xxhash_rust::xxh3::xxh3_64;
 use zstd::stream::write::Encoder;
 
 // ── Constants ──────────────────────────────────────────────────────────────
-
-/// CDC chunk parameters for cross-file deduplication.
-/// Larger chunks give zstd more context per chunk and eliminate the zstd-frame
-/// overhead (~18 B/chunk) that dominated at the old 4 KB minimum.
-/// Files smaller than CDC_MIN produce exactly one chunk (the whole file),
-/// giving them the same compression quality as a single-blob compress.
-const CDC_MIN: u32 =  16 * 1024; //  16 KB
-const CDC_AVG: u32 =  64 * 1024; //  64 KB
-const CDC_MAX: u32 = 256 * 1024; // 256 KB
 
 /// Per-type zstd dictionary training parameters.
 const DICT_SAMPLE_SIZE: usize = 8 * 1024;   // 8 KB per sample
@@ -159,8 +150,11 @@ impl Pipeline {
 
         // Global chunk pool for cross-file dedup.
         // key = xxh3 of raw (uncompressed) chunk bytes
-        // value = (body_offset, body_length, uncompressed_length)
-        let mut chunk_pool: HashMap<u64, (u64, u64, u64)> = HashMap::new();
+        // value = (body_offset, body_length, uncompressed_length, compressed)
+        // `compressed` records whether the stored bytes are zstd-compressed so that
+        // deduplicated chunks use the correct flag regardless of the referencing file's type.
+        let mut chunk_pool: HashMap<u64, (u64, u64, u64, bool)> =
+            HashMap::with_capacity(total_assets * 4);
 
         // per-asset index info:
         //   Some((pre_encoding, compressed_offset, compressed_length, Vec<chunks>, is_stored_raw))
@@ -169,7 +163,7 @@ impl Pipeline {
         let mut body_info: HashMap<
             usize,
             (PreEncoding, u64, u64, Vec<AssetChunkRef>, bool),
-        > = HashMap::new();
+        > = HashMap::with_capacity(total_assets);
 
         let mut current_offset = 0u64;
         let mut total_compressed = 0u64;
@@ -214,53 +208,8 @@ impl Pipeline {
         }
 
         // ── Per-type zstd dictionary training ─────────────────────────────
-        // Pass 1 (read-only): collect a small sample from each non-compressed
-        // small file, train one zstd dictionary per asset type, then use those
-        // dictionaries during the body-write pass below.
-        // Each file is only read up to DICT_SAMPLE_SIZE bytes, so overhead is
-        // negligible even for large corpora.
-        let (texture_zstd_dict, mesh_zstd_dict, other_zstd_dict) = {
-            let mut texture_samples: Vec<Vec<u8>> = Vec::with_capacity(DICT_MAX_SAMPLES);
-            let mut mesh_samples: Vec<Vec<u8>> = Vec::with_capacity(DICT_MAX_SAMPLES);
-            let mut other_samples: Vec<Vec<u8>> = Vec::with_capacity(DICT_MAX_SAMPLES);
-
-            for &(_, asset) in &to_compress {
-                if asset.size >= LARGE_FILE_THRESHOLD {
-                    continue;
-                }
-                if is_already_compressed(&asset.asset_type, &asset.path) {
-                    continue;
-                }
-                let need_more = match &asset.asset_type {
-                    AssetType::Texture => texture_samples.len() < DICT_MAX_SAMPLES,
-                    AssetType::Mesh    => mesh_samples.len() < DICT_MAX_SAMPLES,
-                    _                  => other_samples.len() < DICT_MAX_SAMPLES,
-                };
-                if !need_more {
-                    continue;
-                }
-                // Read only up to DICT_SAMPLE_SIZE bytes.
-                let mut f = std::fs::File::open(&asset.path)?;
-                let cap = (asset.size as usize).min(DICT_SAMPLE_SIZE);
-                let mut buf = vec![0u8; cap];
-                use std::io::Read as _;
-                f.read_exact(&mut buf)?;
-                match &asset.asset_type {
-                    AssetType::Texture => texture_samples.push(buf),
-                    AssetType::Mesh    => mesh_samples.push(buf),
-                    _                  => other_samples.push(buf),
-                }
-            }
-
-            fn train(samples: &[Vec<u8>]) -> Vec<u8> {
-                if samples.len() < DICT_MIN_SAMPLES {
-                    return Vec::new();
-                }
-                zstd::dict::from_samples(samples, DICT_SIZE).unwrap_or_default()
-            }
-
-            (train(&texture_samples), train(&mesh_samples), train(&other_samples))
-        };
+        let (texture_zstd_dict, mesh_zstd_dict, other_zstd_dict) =
+            train_zstd_dicts(&to_compress)?;
 
         // ── Phase 2: small files — v2 chunk-dedup ─────────────────────────
         //
@@ -279,21 +228,18 @@ impl Pipeline {
         // ── Stage 2a: parallel read + compress ────────────────────────────
 
         // Each element: (original_index, pre_encoding, already_compressed,
-        //                Vec<(hash, uncompressed_len, compressed_bytes)>)
-        // `compressed_bytes` is the raw chunk data (already-compressed) or the
-        // zstd-compressed output.
-        let small_asset_work: Vec<anyhow::Result<(usize, PreEncoding, bool, Vec<(u64, u64, Vec<u8>)>)>> =
+        //                Vec<(hash, uncompressed_len, compressed_bytes, is_compressed)>)
+        // `is_compressed` = true when bytes are zstd-compressed, false when stored raw.
+        let small_asset_work: Vec<anyhow::Result<(usize, PreEncoding, bool, Vec<(u64, u64, Vec<u8>, bool)>)>> =
             to_compress
                 .par_iter()
                 .filter(|&&(_, asset)| asset.size < LARGE_FILE_THRESHOLD)
-                .map(|&(idx, asset)| -> anyhow::Result<(usize, PreEncoding, bool, Vec<(u64, u64, Vec<u8>)>)> {
+                .map(|&(idx, asset)| -> anyhow::Result<(usize, PreEncoding, bool, Vec<(u64, u64, Vec<u8>, bool)>)> {
                     let raw = read_file_bytes(&asset.path)?;
                     let already_compressed = is_already_compressed(&asset.asset_type, &asset.path);
                     let (pre_encoding, processed) = if already_compressed {
                         (PreEncoding::None, raw)
                     } else {
-                        // Note: pre_encode takes ownership; MeshCompressor::delta_encode_bytes
-                        // is pure and safe to call from multiple threads.
                         self.pre_encode(&asset.asset_type, raw)
                     };
 
@@ -304,27 +250,34 @@ impl Pipeline {
                         _                  => &other_zstd_dict,
                     };
 
-                    let mut chunks: Vec<(u64, u64, Vec<u8>)> = Vec::new();
+                    let mut chunks: Vec<(u64, u64, Vec<u8>, bool)> = Vec::new();
                     for chunk in FastCDC::new(&processed, CDC_MIN, CDC_AVG, CDC_MAX) {
-                        let chunk_data = &processed[chunk.offset..chunk.offset + chunk.length];
+                        let end = chunk.offset.checked_add(chunk.length)
+                            .filter(|&e| e <= processed.len())
+                            .ok_or_else(|| anyhow::anyhow!(
+                                "FastCDC out-of-bounds chunk [{}, +{}] in {} (buf {})",
+                                chunk.offset, chunk.length,
+                                asset.relative_path.display(), processed.len()
+                            ))?;
+                        let chunk_data = &processed[chunk.offset..end];
                         let hash = xxh3_64(chunk_data);
                         let uncompressed_len = chunk.length as u64;
-                        let bytes = if already_compressed {
-                            chunk_data.to_vec()
+                        let (bytes, is_compressed) = if already_compressed {
+                            (chunk_data.to_vec(), false)
                         } else if dict.is_empty() {
-                            zstd::bulk::compress(chunk_data, level)?
+                            (zstd::bulk::compress(chunk_data, level)?, true)
                         } else {
-                            zstd::bulk::Compressor::with_dictionary(level, dict)?
-                                .compress(chunk_data)?
+                            (zstd::bulk::Compressor::with_dictionary(level, dict)?
+                                .compress(chunk_data)?, true)
                         };
-                        chunks.push((hash, uncompressed_len, bytes));
+                        chunks.push((hash, uncompressed_len, bytes, is_compressed));
                     }
                     Ok((idx, pre_encoding, already_compressed, chunks))
                 })
                 .collect();
 
         // Propagate any per-asset error from the parallel pass.
-        let mut small_asset_work: Vec<(usize, PreEncoding, bool, Vec<(u64, u64, Vec<u8>)>)> =
+        let mut small_asset_work: Vec<(usize, PreEncoding, bool, Vec<(u64, u64, Vec<u8>, bool)>)> =
             small_asset_work.into_iter().collect::<anyhow::Result<_>>()?;
 
         // Sort by original index so pool commits are deterministic (same order
@@ -348,21 +301,17 @@ impl Pipeline {
 
             let mut file_chunks: Vec<AssetChunkRef> = Vec::new();
 
-            for (hash, uncompressed_len, bytes) in chunks {
-                if let Some(&(off, body_len, _)) = chunk_pool.get(&hash) {
-                    // Chunk already in body — reference it.
+            for (hash, uncompressed_len, bytes, is_compressed) in chunks {
+                if let Some(&(off, body_len, _, orig_compressed)) = chunk_pool.get(&hash) {
+                    // Chunk already in body — reference it using its original compression flag.
                     dedup_hits += 1;
-                    dedup_bytes_saved += if already_compressed {
-                        uncompressed_len
-                    } else {
-                        body_len
-                    };
+                    dedup_bytes_saved = dedup_bytes_saved.saturating_add(body_len);
                     file_chunks.push(AssetChunkRef {
                         chunk_hash: hash,
                         body_offset: off,
                         body_length: body_len,
                         uncompressed_length: uncompressed_len,
-                        compressed: !already_compressed,
+                        compressed: orig_compressed,
                     });
                 } else {
                     // New chunk — write to body.
@@ -370,7 +319,7 @@ impl Pipeline {
                     let body_offset = current_offset;
                     let body_len = bytes.len() as u64;
                     body_writer.write_all(&bytes)?;
-                    chunk_pool.insert(hash, (body_offset, body_len, uncompressed_len));
+                    chunk_pool.insert(hash, (body_offset, body_len, uncompressed_len, is_compressed));
                     current_offset += body_len;
                     total_compressed += body_len;
 
@@ -379,7 +328,7 @@ impl Pipeline {
                         body_offset,
                         body_length: body_len,
                         uncompressed_length: uncompressed_len,
-                        compressed: !already_compressed,
+                        compressed: is_compressed,
                     });
                 }
             }
@@ -574,15 +523,20 @@ impl Pipeline {
         let mut body_writer =
             BufWriter::with_capacity(4 * 1024 * 1024, File::create(&tmp_body_path)?);
 
-        let mut chunk_pool: HashMap<u64, (u64, u64, u64)> = HashMap::new();
+        let mut chunk_pool: HashMap<u64, (u64, u64, u64, bool)> =
+            HashMap::with_capacity(total_assets * 4);
         let mut body_info: HashMap<usize, (PreEncoding, u64, u64, Vec<AssetChunkRef>, bool)> =
-            HashMap::new();
+            HashMap::with_capacity(total_assets);
         let mut current_offset = 0u64;
         let mut total_compressed = 0u64;
         let mut dedup_hits = 0usize;
         let mut dedup_bytes_saved = 0u64;
         let mut unique_chunk_count = 0usize;
         let mut new_manifest = BuildManifest::default();
+
+        // Train per-type zstd dictionaries (same as full build).
+        let (texture_zstd_dict, mesh_zstd_dict, other_zstd_dict) =
+            train_zstd_dicts(&to_compress)?;
 
         // ── Phase 1: large files ─────────────────────────────────────────────
         for &(idx, asset) in &to_compress {
@@ -662,18 +616,18 @@ impl Pipeline {
                 let mut new_chunks: Vec<AssetChunkRef> = Vec::new();
 
                 for old_chunk in &e.index_entry.chunks {
-                    if let Some(&(new_off, body_len, uncompr_len)) =
+                    if let Some(&(new_off, body_len, uncompr_len, orig_compressed)) =
                         chunk_pool.get(&old_chunk.chunk_hash)
                     {
                         // Chunk already written to new body (dedup).
                         dedup_hits += 1;
-                        dedup_bytes_saved += body_len;
+                        dedup_bytes_saved = dedup_bytes_saved.saturating_add(body_len);
                         new_chunks.push(AssetChunkRef {
                             chunk_hash: old_chunk.chunk_hash,
                             body_offset: new_off,
                             body_length: body_len,
                             uncompressed_length: uncompr_len,
-                            compressed: old_chunk.compressed,
+                            compressed: orig_compressed,
                         });
                     } else {
                         // Copy chunk bytes from old package.
@@ -687,7 +641,7 @@ impl Pipeline {
                         )?;
                         chunk_pool.insert(
                             old_chunk.chunk_hash,
-                            (new_off, old_chunk.body_length, old_chunk.uncompressed_length),
+                            (new_off, old_chunk.body_length, old_chunk.uncompressed_length, old_chunk.compressed),
                         );
                         current_offset += old_chunk.body_length;
                         total_compressed += old_chunk.body_length;
@@ -717,33 +671,51 @@ impl Pipeline {
                 let mut file_chunks: Vec<AssetChunkRef> = Vec::new();
 
                 for chunk in FastCDC::new(&processed, CDC_MIN, CDC_AVG, CDC_MAX) {
-                    let chunk_data = &processed[chunk.offset..chunk.offset + chunk.length];
+                    let end = chunk.offset.checked_add(chunk.length)
+                        .filter(|&e| e <= processed.len())
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "FastCDC out-of-bounds chunk [{}, +{}] in {} (buf {})",
+                            chunk.offset, chunk.length,
+                            asset.relative_path.display(), processed.len()
+                        ))?;
+                    let chunk_data = &processed[chunk.offset..end];
                     let hash = xxh3_64(chunk_data);
                     let uncompressed_len = chunk.length as u64;
 
-                    if let Some(&(off, body_len, _)) = chunk_pool.get(&hash) {
+                    if let Some(&(off, body_len, _, orig_compressed)) = chunk_pool.get(&hash) {
                         dedup_hits += 1;
-                        dedup_bytes_saved += body_len;
+                        dedup_bytes_saved = dedup_bytes_saved.saturating_add(body_len);
                         file_chunks.push(AssetChunkRef {
                             chunk_hash: hash,
                             body_offset: off,
                             body_length: body_len,
                             uncompressed_length: uncompressed_len,
-                            compressed: !already_compressed,
+                            compressed: orig_compressed,
                         });
                     } else {
                         unique_chunk_count += 1;
                         let body_offset = current_offset;
+                        let is_compressed = !already_compressed;
                         let body_len = if already_compressed {
                             body_writer.write_all(chunk_data)?;
                             uncompressed_len
                         } else {
-                            let compressed = zstd::bulk::compress(chunk_data, level)?;
+                            let dict: &[u8] = match &asset.asset_type {
+                                AssetType::Texture => &texture_zstd_dict,
+                                AssetType::Mesh    => &mesh_zstd_dict,
+                                _                  => &other_zstd_dict,
+                            };
+                            let compressed = if dict.is_empty() {
+                                zstd::bulk::compress(chunk_data, level)?
+                            } else {
+                                zstd::bulk::Compressor::with_dictionary(level, dict)?
+                                    .compress(chunk_data)?
+                            };
                             let len = compressed.len() as u64;
                             body_writer.write_all(&compressed)?;
                             len
                         };
-                        chunk_pool.insert(hash, (body_offset, body_len, uncompressed_len));
+                        chunk_pool.insert(hash, (body_offset, body_len, uncompressed_len, is_compressed));
                         current_offset += body_len;
                         total_compressed += body_len;
                         file_chunks.push(AssetChunkRef {
@@ -751,7 +723,7 @@ impl Pipeline {
                             body_offset,
                             body_length: body_len,
                             uncompressed_length: uncompressed_len,
-                            compressed: !already_compressed,
+                            compressed: is_compressed,
                         });
                     }
                 }
@@ -830,7 +802,12 @@ impl Pipeline {
         };
 
         let metadata_bytes = serde_json::to_vec(&manifest_meta)?;
-        let dictionary_bytes = serialize(&PackageDictionary { dictionary })?;
+        let dictionary_bytes = serialize(&PackageDictionaryV3 {
+            dictionary,
+            texture_zstd_dict,
+            mesh_zstd_dict,
+            other_zstd_dict,
+        })?;
         let index_bytes = serialize(&index_entries)?;
 
         let mut header = PackageHeader::default();
@@ -917,6 +894,44 @@ fn is_already_compressed(asset_type: &AssetType, path: &Path) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Sample small assets and train one zstd dictionary per asset type.
+/// Returns (texture_dict, mesh_dict, other_dict); empty Vec when too few samples.
+fn train_zstd_dicts(
+    to_compress: &[(usize, &AssetMetadata)],
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut texture_samples: Vec<Vec<u8>> = Vec::with_capacity(DICT_MAX_SAMPLES);
+    let mut mesh_samples:    Vec<Vec<u8>> = Vec::with_capacity(DICT_MAX_SAMPLES);
+    let mut other_samples:   Vec<Vec<u8>> = Vec::with_capacity(DICT_MAX_SAMPLES);
+
+    for &(_, asset) in to_compress {
+        if asset.size >= LARGE_FILE_THRESHOLD { continue; }
+        if is_already_compressed(&asset.asset_type, &asset.path) { continue; }
+        let need_more = match &asset.asset_type {
+            AssetType::Texture => texture_samples.len() < DICT_MAX_SAMPLES,
+            AssetType::Mesh    => mesh_samples.len() < DICT_MAX_SAMPLES,
+            _                  => other_samples.len() < DICT_MAX_SAMPLES,
+        };
+        if !need_more { continue; }
+        let mut f = std::fs::File::open(&asset.path)?;
+        let cap = (asset.size as usize).min(DICT_SAMPLE_SIZE);
+        let mut buf = vec![0u8; cap];
+        use std::io::Read as _;
+        f.read_exact(&mut buf)?;
+        match &asset.asset_type {
+            AssetType::Texture => texture_samples.push(buf),
+            AssetType::Mesh    => mesh_samples.push(buf),
+            _                  => other_samples.push(buf),
+        }
+    }
+
+    fn train(samples: &[Vec<u8>]) -> Vec<u8> {
+        if samples.len() < DICT_MIN_SAMPLES { return Vec::new(); }
+        zstd::dict::from_samples(samples, DICT_SIZE).unwrap_or_default()
+    }
+
+    Ok((train(&texture_samples), train(&mesh_samples), train(&other_samples)))
 }
 
 fn read_file_bytes(path: &Path) -> anyhow::Result<Vec<u8>> {

@@ -34,6 +34,10 @@ use crate::format::AssetIndexEntry;
 /// Per-file record stored in the build manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestEntry {
+    /// Schema version for forward-compatibility.  Current value: 1.
+    /// If a future release adds fields, old manifests (version < current) are
+    /// silently ignored (load_for falls back to empty manifest → full rebuild).
+    pub version: u8,
     /// Nanoseconds since UNIX epoch at last modification (0 when unavailable).
     /// Using nanoseconds (NTFS: 100 ns resolution) avoids the 1-second
     /// granularity of FAT32 / `as_secs()` incorrectly treating fast sequential
@@ -104,6 +108,7 @@ pub fn asset_unchanged(asset: &AssetMetadata, entry: &ManifestEntry) -> bool {
 /// Build a `ManifestEntry` from a freshly scanned asset and its index entry.
 pub fn make_manifest_entry(asset: &AssetMetadata, index_entry: AssetIndexEntry) -> ManifestEntry {
     ManifestEntry {
+        version: 1,
         mtime_nanos: mtime_nanos(&asset.path).unwrap_or(0),
         file_size: asset.size,
         content_hash: asset.hash,

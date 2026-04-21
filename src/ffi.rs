@@ -124,12 +124,20 @@ pub extern "C" fn neuropack_read_asset(
 
     match reader.extract_asset(entry) {
         Ok(data) => {
-            let len = data.len();
-            // Move data into a Box<[u8]>, then leak the raw pointer.
-            let ptr = Box::into_raw(data.into_boxed_slice()) as *mut u8;
+            let data_len = data.len();
+            // Prepend the length as a usize header so neuropack_free_asset
+            // can reconstruct the allocation without relying on the caller
+            // to supply the correct length.
+            let hdr = std::mem::size_of::<usize>();
+            let total = hdr + data_len;
+            let mut alloc: Vec<u8> = Vec::with_capacity(total);
+            alloc.extend_from_slice(&data_len.to_ne_bytes());
+            alloc.extend_from_slice(&data);
+            let raw = alloc.as_mut_ptr();
+            std::mem::forget(alloc);
             unsafe {
-                *out_data = ptr;
-                *out_len  = len;
+                *out_data = raw.add(hdr);
+                *out_len  = data_len;
             }
             0
         }
@@ -141,11 +149,21 @@ pub extern "C" fn neuropack_read_asset(
 ///
 /// # Safety
 /// `data` must be a pointer previously returned in `out_data` by
-/// `neuropack_read_asset`, and `len` must be the corresponding `out_len`.
+/// `neuropack_read_asset`.  The `_len` parameter is accepted for
+/// backward compatibility but is not used — the true length is stored
+/// in the allocation header immediately before `data`.
 #[no_mangle]
-pub unsafe extern "C" fn neuropack_free_asset(data: *mut u8, len: usize) {
+pub unsafe extern "C" fn neuropack_free_asset(data: *mut u8, _len: usize) {
     if !data.is_null() {
-        drop(Box::from_raw(std::slice::from_raw_parts_mut(data, len)));
+        let hdr = std::mem::size_of::<usize>();
+        let alloc_ptr = data.sub(hdr);
+        // Read the stored data length from the header.
+        let mut len_bytes = [0u8; std::mem::size_of::<usize>()];
+        std::ptr::copy_nonoverlapping(alloc_ptr, len_bytes.as_mut_ptr(), hdr);
+        let data_len = usize::from_ne_bytes(len_bytes);
+        let total = hdr + data_len;
+        // Reconstruct the Vec and drop it, freeing the allocation.
+        drop(Vec::from_raw_parts(alloc_ptr, total, total));
     }
 }
 

@@ -39,6 +39,21 @@ fn safe_join(root: &Path, rel: &Path) -> anyhow::Result<PathBuf> {
             other => anyhow::bail!("unsafe path component {:?} in {:?}", other, rel),
         }
     }
+    // Walk each component that already exists and reject symlinks.
+    // This prevents a crafted archive from writing through a pre-existing
+    // symlink to escape the extraction root.
+    let mut current = root.to_path_buf();
+    for component in rel.components() {
+        current.push(component);
+        if let Ok(meta) = std::fs::symlink_metadata(&current) {
+            if meta.file_type().is_symlink() {
+                anyhow::bail!(
+                    "extraction path contains symlink at {:?} — refusing to write through it",
+                    current
+                );
+            }
+        }
+    }
     Ok(root.join(rel))
 }
 
@@ -72,7 +87,7 @@ impl PackageReader {
         let header_size = bincode::serialized_size(&header)?;
         let expected_body = header_size + header.metadata_length + header.dictionary_length;
         if header.body_offset != expected_body {
-            anyhow::bail!("corrupt header: body_offset mismatch");
+            anyhow::bail!("corrupt header: body_offset mismatch (expected {}, got {})", expected_body, header.body_offset);
         }
         if header.index_offset < header.body_offset {
             anyhow::bail!("corrupt header: index before body");
@@ -535,8 +550,16 @@ fn decompress_chunks(
 ) -> anyhow::Result<Vec<u8>> {
     let mut assembled = Vec::with_capacity(entry.uncompressed_length as usize);
     let mut file_ref = file;
+    let mut assembled_so_far = 0u64;
 
     for chunk_ref in &entry.chunks {
+        assembled_so_far = assembled_so_far.saturating_add(chunk_ref.uncompressed_length);
+        if assembled_so_far > MAX_UNCOMPRESSED {
+            anyhow::bail!(
+                "decompression bomb guard: {} chunk data would exceed {} bytes",
+                entry.relative_path.display(), MAX_UNCOMPRESSED
+            );
+        }
         let abs_offset = header.body_offset + chunk_ref.body_offset;
         file_ref.seek(SeekFrom::Start(abs_offset))?;
         let mut raw = vec![0u8; chunk_ref.body_length as usize];
@@ -581,7 +604,7 @@ fn decode_v1_entry(
     decoder.read_to_end(&mut payload)?;
 
     let segments: Vec<Segment> = bincode::deserialize(&payload)?;
-    let reconstructed = reconstruct(&segments, dictionary);
+    let reconstructed = reconstruct(&segments, dictionary)?;
 
     let data = match entry.pre_encoding {
         PreEncoding::None => reconstructed,
@@ -595,19 +618,22 @@ fn decode_v1_entry(
     Ok(data)
 }
 
-fn reconstruct(segments: &[Segment], dictionary: &Dictionary) -> Vec<u8> {
+fn reconstruct(segments: &[Segment], dictionary: &Dictionary) -> anyhow::Result<Vec<u8>> {
     let mut output = Vec::new();
     for segment in segments {
         match segment {
             Segment::Literal(bytes) => output.extend_from_slice(bytes),
             Segment::Reference(id) => {
-                if let Some(pattern) = dictionary.patterns.get(*id as usize) {
-                    output.extend_from_slice(&pattern.bytes);
+                match dictionary.patterns.get(*id as usize) {
+                    Some(pattern) => output.extend_from_slice(&pattern.bytes),
+                    None => anyhow::bail!(
+                        "corrupt package: segment references unknown pattern id {}", id
+                    ),
                 }
             }
         }
     }
-    output
+    Ok(output)
 }
 
 fn ensure_parent(path: &Path) -> anyhow::Result<()> {

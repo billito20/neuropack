@@ -42,7 +42,7 @@ pub struct BenchmarkReport {
 pub struct BenchmarkRunner;
 
 impl BenchmarkRunner {
-    pub fn run<P: AsRef<Path>>(&self, root: P, output: P, no_brotli: bool, skip_zstd19: bool, skip_neuropack: bool) -> anyhow::Result<()> {
+    pub fn run<P: AsRef<Path>>(&self, root: P, output: P, no_brotli: bool, no_zstd19: bool, no_neuropack: bool) -> anyhow::Result<()> {
         let root = root.as_ref();
         let output = output.as_ref();
         let output_dir = output.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -52,9 +52,9 @@ impl BenchmarkRunner {
         let total_bytes: u64 = assets.iter().map(|a| a.size).sum();
         let gb = total_bytes as f64 / 1_073_741_824.0;
         let mut flags = Vec::new();
-        if no_brotli     { flags.push("brotli skipped"); }
-        if skip_zstd19   { flags.push("zstd-19 skipped"); }
-        if skip_neuropack{ flags.push("neuropack skipped"); }
+        if no_brotli    { flags.push("brotli skipped"); }
+        if no_zstd19    { flags.push("zstd-19 skipped"); }
+        if no_neuropack { flags.push("neuropack skipped"); }
         let flag_str = if flags.is_empty() { String::new() } else { format!(" [{}]", flags.join(", ")) };
         eprintln!("Benchmarking {} files ({:.2} GB){} ...", assets.len(), gb, flag_str);
 
@@ -63,7 +63,7 @@ impl BenchmarkRunner {
         let zstd_3  = bench_zstd(&assets,  3, total_bytes)?;
         eprintln!("  zstd-9 ...");
         let zstd_9  = bench_zstd(&assets,  9, total_bytes)?;
-        let zstd_19 = if skip_zstd19 {
+        let zstd_19 = if no_zstd19 {
             eprintln!("  zstd-19 skipped.");
             None
         } else {
@@ -84,7 +84,7 @@ impl BenchmarkRunner {
         };
 
         // ── NeuroPack baseline + optimised ───────────────────────────────
-        let (neuropack_baseline, neuropack) = if skip_neuropack {
+        let (neuropack_baseline, neuropack) = if no_neuropack {
             eprintln!("  NeuroPack skipped.");
             (None, None)
         } else {

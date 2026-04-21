@@ -1,5 +1,5 @@
 use crate::asset_scanner::AssetScanner;
-use crate::format::LARGE_FILE_THRESHOLD;
+use crate::format::{CDC_AVG, CDC_MAX, CDC_MIN, LARGE_FILE_THRESHOLD};
 use fastcdc::v2020::{FastCDC, StreamCDC};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -7,11 +7,6 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::xxh3_64;
-
-// ── CDC parameters ─────────────────────────────────────────────────────────
-const CDC_MIN: u32 = 4 * 1024; //  4 KB
-const CDC_AVG: u32 = 16 * 1024; // 16 KB
-const CDC_MAX: u32 = 64 * 1024; // 64 KB
 
 // ── RAII temp-file guard ───────────────────────────────────────────────────
 
