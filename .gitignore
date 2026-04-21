@@ -2,3 +2,4 @@
 /.claude/
 neuropack-bench-*.neuropack
 benchmark-stress-*.json
+neuropack/
